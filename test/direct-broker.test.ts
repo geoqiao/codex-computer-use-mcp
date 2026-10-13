@@ -372,14 +372,35 @@ test("tool timeout ends the dispatched native turn before terminating the broker
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("cleanup failures and protocol faults still terminate the private process within a bound", async () => {
+test("a failed or stalled cursor cleanup keeps the completed action's result and still terminates the private process", async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), "direct-broker-cleanup-test."));
 	try {
-		for (const mode of ["cleanup-error", "cleanup-hang", "cleanup-model", "cleanup-malformed"]) {
+		for (const mode of ["cleanup-error", "cleanup-hang"]) {
 			const { script, log } = await makeFake(root);
 			await writeFile(log, "");
 			let pid = 0;
 			const started = Date.now();
+			const result = await callOfficialDirectTool("type_text", { app: "TextEdit", text: "hello" }, {
+				...options(script, mode), onSpawn: (value) => { pid = value; },
+			});
+			assert.equal(result.isError, false, mode);
+			assert.equal(result.brokerCleanupVerified, true, mode);
+			assert.ok(Date.now() - started < 6000, mode);
+			assert.throws(() => process.kill(pid, 0), mode);
+			const records = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+			assert.equal(records.filter((item) => item.method === "mcpServer/tool/call").length, 1, mode);
+			assert.equal(records.filter((item) => item.method === "command/exec").length, 1, mode);
+		}
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("protocol faults during cursor cleanup still fail the call and terminate the private process", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "direct-broker-cleanup-fault-test."));
+	try {
+		for (const mode of ["cleanup-model", "cleanup-malformed"]) {
+			const { script, log } = await makeFake(root);
+			await writeFile(log, "");
+			let pid = 0;
 			let observed: DirectBrokerCallError | undefined;
 			try {
 				await callOfficialDirectTool("list_apps", {}, { ...options(script, mode), onSpawn: (value) => { pid = value; } });
@@ -391,15 +412,12 @@ test("cleanup failures and protocol faults still terminate the private process w
 			assert.equal(observed.cleanupVerified, true, mode);
 			if (mode === "cleanup-model") assert.match(observed.message, /model-turn activity/);
 			if (mode === "cleanup-malformed") assert.match(observed.message, /malformed JSONL/);
-			assert.ok(Date.now() - started < 6000, mode);
 			assert.throws(() => process.kill(pid, 0), mode);
-			const records = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-			assert.equal(records.filter((item) => item.method === "command/exec").length, 1, mode);
 		}
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("drain expiry bounds cancellation and reports unverified native cleanup while killing private descendants", async () => {
+test("drain expiry bounds cancellation and still kills private descendants", async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), "direct-broker-native-hang-test."));
 	try {
 		const { script, log } = await makeFake(root);
@@ -408,7 +426,7 @@ test("drain expiry bounds cancellation and reports unverified native cleanup whi
 		const childPid = await waitForChildPid(log);
 		const started = Date.now();
 		controller.abort();
-		await assert.rejects(call, /cancelled; Official Computer Use turn cleanup failed/);
+		await assert.rejects(call, (error: Error) => /Direct Computer Use request cancelled/.test(error.message) && !/turn cleanup/.test(error.message));
 		assert.ok(Date.now() - started < 4000);
 		assert.throws(() => process.kill(childPid, 0));
 		const records = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
@@ -416,7 +434,7 @@ test("drain expiry bounds cancellation and reports unverified native cleanup whi
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("a transport that disappears between calls cannot silently skip native turn cleanup", async () => {
+test("a transport that disappears between calls still closes cleanly", async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), "direct-broker-idle-exit-test."));
 	try {
 		const { script } = await makeFake(root);
@@ -428,7 +446,7 @@ test("a transport that disappears between calls cannot silently skip native turn
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 		assert.throws(() => process.kill(pid, 0));
-		await assert.rejects(session.close(), /turn cleanup failed/);
+		await session.close();
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 

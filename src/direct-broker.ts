@@ -574,7 +574,8 @@ export async function createOfficialDirectToolSession(
 				const error = new Error(`Official app-server request timed out: ${methodName}`);
 				reject(error);
 				if (methodName === "mcpServer/tool/call") cancel(error);
-				else fail(error);
+				// A stalled cursor cleanup must not fail the session; teardown follows.
+				else if (!cleanup) fail(error);
 			}, timeoutMs);
 			pending.set(id, { resolve, reject, timer });
 			try { send({ method: methodName, id, params }); }
@@ -599,7 +600,6 @@ export async function createOfficialDirectToolSession(
 		closePromise ??= (async () => {
 			closed = true;
 			rejectAll(new Error("Official app-server closed"));
-			let turnCleanupError: unknown;
 			const client = verification.client;
 			if (toolCallAttempted && client && !termination) {
 				try {
@@ -629,7 +629,11 @@ export async function createOfficialDirectToolSession(
 						timeoutMs: 2_000,
 					}, 3_000, true));
 					if (result.exitCode !== 0) throw new Error(`Official turn-ended notification exited with code ${result.exitCode}`);
-				} catch (error) { turnCleanupError = error; }
+				} catch {
+					// Best effort: the native request already ran, so its result stands. Failing
+					// here could make a caller repeat a completed UI action; at worst the shared
+					// service keeps showing this session's cursor.
+				}
 			}
 			let cleanupError: Error | undefined;
 			try {
@@ -646,9 +650,6 @@ export async function createOfficialDirectToolSession(
 				cleanupError = error instanceof Error ? error : new Error(String(error));
 			}
 			if (cleanupError) throw new Error("Official direct Computer Use broker cleanup failed", { cause: cleanupError });
-			if (turnCleanupError) throw new Error(`${fatalError ? `${fatalError.message}; ` : ""}Official Computer Use turn cleanup failed`, {
-				cause: fatalError ? new AggregateError([fatalError, turnCleanupError]) : turnCleanupError,
-			});
 			if (fatalError || modelTurnsStarted !== 0) throw fatalError ?? new BrokerVerificationError("Model-turn activity was observed during broker teardown");
 		})();
 		return closePromise;
