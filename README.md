@@ -10,7 +10,7 @@ OpenAI does not produce or endorse this independent project. It relies on an exp
 - Node.js 22 or newer
 - the official ChatGPT macOS app, by default at `/Applications/ChatGPT.app`
 - the Computer Use component installed by ChatGPT, by default under `~/.codex/computer-use/`
-- Pi 0.80.7 or newer when using the Pi integration
+- Pi 0.99.0 or newer when using the Pi integration
 
 macOS Screen Recording, Accessibility and TCC controls still apply.
 
@@ -22,25 +22,22 @@ Install from npm:
 pi install npm:codex-computer-use-mcp
 ```
 
-The extension registers and activates one composable tool:
-
-```text
-computer_use({ code: string })
-```
-
-The code runs with `sky`, `emit`, `emitImage` and a persistent `store` object. `sky` exposes all ten official Computer Use methods, so known sequential actions can run without a model round-trip between each action:
+The extension registers the ten official Computer Use methods as Pi tools named `computer_use_<method>`, such as `computer_use_get_app_state` and `computer_use_click`. They use Pi's `codemode` exposure, so agents call and compose them from Pi's built-in `codemode` tool together with other Pi and MCP tools:
 
 ```js
-const state = await sky.get_app_state({ app: "TextEdit" });
-emit(state.text);
+const state = await tools.computer_use_get_app_state({ app: "TextEdit" });
+text(state.text);
+image(state.screenshot);
 
-await sky.click({ app: "TextEdit", element_index: "7" });
-await sky.type_text({ app: "TextEdit", text: "hello" });
-const next = await sky.get_app_state({ app: "TextEdit" });
-emit(next.text);
+await tools.computer_use_click({ app: "TextEdit", element_index: "7" });
+await tools.computer_use_type_text({ app: "TextEdit", text: "hello" });
+const next = await tools.computer_use_get_app_state({ app: "TextEdit" });
+text(next.text);
 ```
 
-Only values passed to `emit(...)` or `emitImage(...)` are returned to Pi. `list_apps` returns the official text inventory produced by the app-server transport; unlike native `@oai/sky`, that transport does not provide the structured app array. `get_app_state` may return an accessibility-tree diff after the first inspection; pass `disableDiff: true` to request a fresh full tree. Screenshot payloads remain in the parent process and cross the code-worker boundary only as small opaque handles. Code runs in a worker so an unbounded loop can be terminated without freezing Pi; time spent inside an official Computer Use call does not count toward the code execution slice. If a later action fails, Pi still receives earlier emitted observations and the attempted method sequence.
+The extension does not change which tools are active. Turn on `codemode` with `"defaultTools": ["+codemode"]` in `settings.json` or with `pi --tools +codemode`; Pi also turns it on when an MCP server uses `codemode` exposure. When neither `codemode` nor a Computer Use tool is active, the extension shows one notice at the first prompt.
+
+`computer_use_get_app_state` resolves to `{ app, text, screenshot }`, where `screenshot` is an image block for `image()` or `null`. It may return an accessibility-tree diff after the first inspection; pass `disableDiff: true` to request a fresh full tree. `computer_use_list_apps` resolves to the official text inventory produced by the app-server transport; unlike native `@oai/sky`, that transport does not provide the structured app array. Other methods resolve to their official text output. A failed call rejects with the official error text. Calls run one at a time, and calls after `get_app_state` reuse the signed session until the agent settles. The namespace instructions, available from `describeNamespace("computer_use")`, summarise this workflow.
 
 Use `/computer-use-status` to inspect the installed component and transport status.
 
@@ -78,7 +75,7 @@ Example Pi MCP configuration:
 
 ## Behaviour
 
-The adapter has one mode. Pi exposes the ten official methods through the single `computer_use` code tool; MCP exposes them as ten typed methods. Both are available without wrapper permission prompts. It adds no app allowlist, action gate, intent classifier, selector rewrite or focus policy. App-server uses Codex Full access. The adapter forwards any elicitation that the official host still emits.
+The adapter has one mode. Pi and MCP both expose the ten official methods as typed tools; Pi gives them `codemode` exposure. Both are available without wrapper permission prompts. It adds no app allowlist, action gate, intent classifier, selector rewrite or focus policy. App-server uses Codex Full access. The adapter forwards any elicitation that the official host still emits.
 
 Production calls require verified OpenAI-signed app-server and Computer Use binaries with Team ID `2DC432GLL2`. The adapter uses an isolated, credential-free app-server context. It rejects any model-turn activity. Calls after `get_app_state` reuse the signed session, preserving element identifiers and official app state.
 
